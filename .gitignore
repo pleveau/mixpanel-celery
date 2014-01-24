@@ -1,0 +1,8 @@
+.tox
+*.pyc
+.noseids
+
+# Packages
+*.egg
+__pycache__
+*.egg-info

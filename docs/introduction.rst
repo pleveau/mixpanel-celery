@@ -24,39 +24,35 @@ via `pip`_
 Installing The Stable Version
 -----------------------------
 
-.. code-block:: bash
+.. code-block:: shell-session
 
     $ pip install mixpanel-celery
 
 
-Installing The Development Version
-----------------------------------
-
-.. code-block:: bash
-
-    $ pip install -e git+git://github.com/winhamwr/mixpanel-celery.git#egg=mixpanel-celery
-
 Running The Test Suite
 ======================
 
-Setuptools' ``nosetests`` command is the easiest way to run the test suite.
+We use Tox to test across all of our supported environments.
 
-.. code-block:: bash
+.. code-block:: shell-session
 
-    $ cd /path/to/mixpanel-celery
-    $ python setup.py nosetests
+    $ pip install tox
+    $ tox
 
-Currently, two tests will fail unless you configure `RabbitMQ`_ specifically for
-the test suite.
+If you'd just like to test for the version of python and Celery that you use,
+install the appropriate requirements listed in the ``requirements`` folder, and
+then run your tests. eg.
 
-It is also possible to run specific tests, disable coverage, use
-``--multiprocess``, etc. by using the ``scripts/run_tests.py`` script. For
-example, to only run a  single test
+.. code-block:: shell-session
 
-.. code-block:: bash
+    $ pip install -r requirements/test_celery_default.txt
+    $ pip install -r requirements/test_django_default.txt
+    $ python setup.py test
 
-    $ cd /path/to/mixpanel-celery/scripts
-    $ ./run_tests.py mixpanel.test.test_tasks:EventTrackerTest.test_handle_properties_no_token
+Right now, the test suite requires Django, but we'd love a pull request to
+remove that requirement.
+
+It is also possible to run specific tests using ``nosetests`` directly.
 
 Configuration
 =============
@@ -68,11 +64,40 @@ For easy test usage with Django, set your Mixpanel api token in your project's
 
 So that all of your `Celery`_ tasks will run in-line for now.
 
-Then add ``mixpanel`` to your list of ``INSTALLED_APPS``.
+.. note::
 
-Note: Obviously you'll want to actually configure `Celery`_ using one of the
-many available backends for actual production use and `Celery`_ has great
-documentation on that.
+    Obviously you'll want to actually configure `Celery`_ using one of the
+    many available backends for actual production use.
+    `Celery`_ has great documentation on that.
+
+
+With Celery 3.1 and above
+-------------------------
+
+If you're not using ``django-celery``,
+you must add the ``mixpanel.tasks`` module
+to your ``include``.
+Otherwise,
+Celery won't know about the ``mixpanel-celery`` tasks.
+
+Your configuration should look something like:
+
+.. code-block:: python
+
+    celery = Celery(
+        'myproject',
+        broker=settings.REDIS_URL,
+        include=['myproject.tasks', 'mixpanel.tasks'],
+    )
+
+With ``django-celery`` and Celery 3.0 or lower
+-----------------------------------------------
+
+If you're using an older version of Celery
+along with the now-deprecated combination of
+``django-celery`` and a call to ``djcelery.setup_loader()``,
+just add ``mixpanel`` to your list of ``INSTALLED_APPS``.
+
 
 Usage
 =====
@@ -83,8 +108,12 @@ Basic python example tracking an event called ``my_event``
 
     from mixpanel.tasks import EventTracker
 
-    et = EventTracker()
-    et.run('my_event', {'distinct_id': 1}, token='YOUR_API_TOKEN')
+    result = EventTracker.delay(
+        'my_event',
+        {'distinct_id': 1},
+        token='YOUR_API_TOKEN',
+    )
+    result.wait()
 
 
 Example usage in a Django view
@@ -92,27 +121,131 @@ Example usage in a Django view
 .. code-block:: python
 
     from mixpanel.tasks import EventTracker
-    from django.shortcuts import render_to_response
-
-    tracker = EventTracker()
-    track_event = lambda *a, **kw: tracker.run(*a, **kw)
+    from django.shortcuts import render
 
     def test_view(request, template='test/test_view.html'):
         """
         Show user a test page.
         """
         # We should record that the user hit this page
-        track_event('hit_test_view', {'distinct_id': request.user.pk})
+        EventTracker.delay('hit_test_view', {'distinct_id': request.user.pk})
 
-        context = RequestContext(request, {})
-        return render_to_response(template, context_instance=context)
+        return render(template)
+
+
+To pass the API key to your templates where you probably use the Mixpanel
+Javascript API, add the context_processor to your settings file
+
+.. code-block:: python
+
+    TEMPLATE_CONTEXT_PROCESSORS = (
+        # ...
+        'mixpanel.context_processors.api_key',
+        # ...
+    )
+
+
+Now in your templates you can access the API key like this
+
+.. code-block:: javascript
+
+    mixpanel.init("{{ MIXPANEL_API_TOKEN }}");
+
+
+People Tracker Usage
+--------------------
+
+mixpanel-celery also supports the People Tracker API which allows you store
+user profiles in `Mixpanel's People Analytics product
+<https://mixpanel.com/people/>`__. The API for this is
+based on the `Mixpanel JavaScript People API
+<https://mixpanel.com/help/reference/javascript#storing-user-profiles>`__.
+Three calls are supported at this time: ``set``, ``add``, and ``track_charge``.
+The ``add`` command is the ``mixpanel.people.increment`` in the JavaScript API.
+
+To set profile property values using the ``set`` event:
+
+.. code-block:: python
+
+    from mixpanel.tasks import PeopleTracker
+
+    result = PeopleTracker.delay(
+        'set',
+        {
+            'distinct_id': 1,
+            'Plan': 'Premium',
+            # you can set many properties in one call
+            'discount end': '2013-01-01'
+
+        },
+        token='YOUR_API_TOKEN',
+    )
+    result.wait()
+
+
+The above would set the ``Plan`` property to ``Premium`` for the profile with
+the mixpanel distinct id of 1. To increment profile property values using the
+``add`` event:
+
+.. code-block:: python
+
+    from mixpanel.tasks import PeopleTracker
+
+    result = PeopleTracker.delay(
+        'add',
+        {
+            'distinct_id': 1,
+            # differs for JS API. You must provide
+            # an increment value. There is no default
+            'games played': 1,
+            'points earned: 500,
+            # subtract by providing a negative value
+            'credits remaining': -34
+        },
+        token='YOUR_API_TOKEN',
+    )
+    result.wait()
+
+You can also track charges using the ``track_charge`` event:
+
+.. code-block:: python
+
+    from mixpanel.tasks import PeopleTracker
+
+    result = PeopleTracker.delay(
+        'track_charge',
+        {
+            'distinct_id': 1,
+            # this value is required
+            'amount': 100,
+            # optionally can have other properties
+            'order_id': 6543
+        },
+        token='YOUR_API_TOKEN',
+    )
+    result.wait()
+
+    result = PeopleTracker.delay(
+        'track_charge',
+        {
+            'distinct_id': 1,
+            # use negative value for refund
+            'amount': -50,
+        },
+        token='YOUR_API_TOKEN',
+    )
+    result.wait()
+
+The ``track_charge`` event differs from the JS API in that you can't override
+the time of the transaction.
+
 
 Building the Documentation
 ==========================
 
 mixpanel-celery uses `sphinx`_ for documentation. To build the HTML docs
 
-.. code-block:: bash
+.. code-block:: shell-session
 
     $ pip install sphinx
     $ pip install sphinxtogithub

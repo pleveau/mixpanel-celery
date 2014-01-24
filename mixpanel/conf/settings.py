@@ -1,6 +1,10 @@
 """Default configuration values and documentation"""
 
 from django.conf import settings
+import os
+
+if os.getenv('DJANGO_SETTINGS_MODULE', None) is None:
+    settings.configure()
 
 """
 .. data:: MIXPANEL_API_TOKEN
@@ -63,6 +67,17 @@ MIXPANEL_API_SERVER = getattr(settings, 'MIXPANEL_API_SERVER',
 """
 MIXPANEL_TRACKING_ENDPOINT = getattr(settings, 'MIXPANEL_TRACKING_ENDPOINT',
                                '/track/')
+
+"""
+.. data:: MIXPANEL_PEOPLE_ENDPOINT
+
+    URL endpoint for registering events to the People API.
+    defaults to ``/engage/``
+
+    Mind the slashes.
+"""
+MIXPANEL_PEOPLE_ENDPOINT = getattr(settings, 'MIXPANEL_PEOPLE_ENDPOINT',
+                               '/engage/')
 
 """
 .. data:: MIXPANEL_DATA_VARIABLE

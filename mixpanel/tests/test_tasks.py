@@ -1,14 +1,28 @@
-import unittest
 import base64
-import urllib
 import logging
+import unittest
+import urllib
+import urlparse
+from datetime import datetime
+
+import mock
+try:
+    from celery.tests.utils import eager_tasks
+except ImportError:
+    # Celery 3.1 removed the eager_tasks decorator
+    from mixpanel.tests.utils import eager_tasks
 
 from django.utils import simplejson
 
-from celery.exceptions import RetryTaskError
-
-from mixpanel.tasks import EventTracker, FunnelEventTracker
+from mixpanel.tasks import EventTracker, PeopleTracker, FunnelEventTracker
 from mixpanel.conf import settings as mp_settings
+
+
+class FakeDateTime(datetime):
+    "A fake replacement for datetime that can be mocked for testing."
+    def __new__(cls, *args, **kwargs):
+        return datetime.__new__(datetime, *args, **kwargs)
+
 
 class EventTrackerTest(unittest.TestCase):
     def setUp(self):
@@ -69,28 +83,65 @@ class EventTrackerTest(unittest.TestCase):
         url_params = et._build_params(event, properties, is_test)
 
         expected_params = urllib.urlencode({
-            'data':base64.b64encode(simplejson.dumps(params)),
-            'test':is_test,
+            'data': base64.b64encode(simplejson.dumps(params)),
+            'test': is_test,
         })
 
         self.assertEqual(expected_params, url_params)
 
-    def test_failed_request(self):
-        mp_settings.MIXPANEL_TRACKING_ENDPOINT = 'brokenurl'
+    @mock.patch('mixpanel.tasks.datetime.datetime', FakeDateTime)
+    def test_build_people_track_charge_params(self):
+        self.maxDiff = None
+        et = PeopleTracker()
+        now = datetime.now()
+        FakeDateTime.now = classmethod(lambda cls: now)
+        event = u'track_charge'
+        is_test = 1
+        properties = {u'amount': 11.77, u'distinct_id': u'test_id',
+                      u'token': u'testtoken', u'extra': u'extra'}
+        expected = {
+            u'$append': {
+                u'$transactions': {
+                    u'$amount': 11.77,
+                    u'$time': unicode(now.isoformat()),
+                    u'extra': 'extra'
+                }
+            },
+            u'$distinct_id': u'test_id',
+            u'$token': u'testtoken',
+        }
+        url_params = et._build_params(event, properties, is_test)
+        parsed = dict(urlparse.parse_qsl(url_params, True))
+        parsed[u'data'] = simplejson.loads(base64.b64decode(parsed['data']))
 
-        et = EventTracker()
-        self.assertRaises(RetryTaskError,
-                          et.run,
-                          'event_foo', throw_retry_error=True)
+        expected_params = {
+            u'data': expected,
+            u'test': unicode(is_test),
+        }
 
-    def test_failed_socket_request(self):
-        mp_settings.MIXPANEL_API_SERVER = '127.0.0.1:60000'
+        self.assertEqual(expected_params, parsed)
 
-        et = EventTracker()
-        self.assertRaises(RetryTaskError,
-                          et.run,
-                          'event_foo', throw_retry_error=True)
+    def test_build_people_set_params(self):
+        et = PeopleTracker()
+        event = 'set'
+        is_test = 1
+        properties = {'stuff': 'thing', 'blue': 'green',
+                      'distinct_id': 'test_id', 'token': 'testtoken'}
+        expected = {
+            '$distinct_id': 'test_id',
+            '$set': {
+                'stuff': 'thing',
+                'blue': 'green',
+            },
+            '$token': 'testtoken',
+        }
+        url_params = et._build_params(event, properties, is_test)
+        expected_params = urllib.urlencode({
+            'data': base64.b64encode(simplejson.dumps(expected)),
+            'test': is_test,
+        })
 
+        self.assertEqual(expected_params, url_params)
 
     def test_run(self):
         # "correct" result obtained from: http://mixpanel.com/api/docs/console
@@ -102,8 +153,9 @@ class EventTrackerTest(unittest.TestCase):
     def test_old_run(self):
         """non-recorded events should return False"""
         et = EventTracker()
-        # Times older than 3 hours don't get recorded according to: http://mixpanel.com/api/docs/specification
-        # equests will be rejected that are 3 hours older than present time
+        # Times older than 3 hours don't get recorded according to:
+        # http://mixpanel.com/api/docs/specification
+        # requests will be rejected that are 3 hours older than present time
         result = et.run('event_foo', {'time': 1245613885})
 
         self.assertFalse(result)
@@ -113,6 +165,35 @@ class EventTrackerTest(unittest.TestCase):
         result = et.run('event_foo', {}, loglevel=logging.DEBUG)
 
         self.assertTrue(result)
+
+
+class BrokenRequestsTest(unittest.TestCase):
+
+    def setUp(self):
+        mp_settings.MIXPANEL_API_TOKEN = 'testtesttest'
+        mp_settings.MIXPANEL_TEST_ONLY = True
+        mp_settings.MIXPANEL_API_SERVER = 'api.mixpanel.com'
+        mp_settings.MIXPANEL_TRACKING_ENDPOINT = '/track/'
+        EventTracker.endpoint = mp_settings.MIXPANEL_TRACKING_ENDPOINT
+
+    def tearDown(self):
+        EventTracker.endpoint = mp_settings.MIXPANEL_TRACKING_ENDPOINT
+
+    def test_failed_request(self):
+        EventTracker.endpoint = 'brokenurl'
+
+        with eager_tasks():
+            result = EventTracker.delay('event_foo')
+
+        self.assertNotEqual(result.traceback, None)
+
+    def test_failed_socket_request(self):
+        mp_settings.MIXPANEL_API_SERVER = '127.0.0.1:60000'
+
+        with eager_tasks():
+            result = EventTracker.delay('event_foo')
+        self.assertNotEqual(result.traceback, None)
+
 
 class FunnelEventTrackerTest(unittest.TestCase):
     def setUp(self):
@@ -136,7 +217,7 @@ class FunnelEventTrackerTest(unittest.TestCase):
 
         # only distinct
         properties = {'distinct_id': 'test_distinct_id'}
-        fp = fet._add_funnel_properties(properties, funnel, step, goal)
+        fet._add_funnel_properties(properties, funnel, step, goal)
 
         # only ip
         properties = {'ip': 'some_ip'}
@@ -147,7 +228,7 @@ class FunnelEventTrackerTest(unittest.TestCase):
         # both
         properties = {'distinct_id': 'test_distinct_id',
                       'ip': 'some_ip'}
-        fp = fet._add_funnel_properties(properties, funnel, step, goal)
+        fet._add_funnel_properties(properties, funnel, step, goal)
 
     def test_afp_properties(self):
         fet = FunnelEventTracker()
