@@ -245,6 +245,7 @@ class PeopleTracker(EventTracker):
                 if not k in ('token', 'distinct_id', 'ip', 'ignore_time')
             )
 
+        print params
         return self._encode_params(params, is_test)
 
 tasks.register(PeopleTracker)
