@@ -180,6 +180,7 @@ tasks.register(EventTracker)
 class PeopleTracker(EventTracker):
     endpoint = mp_settings.MIXPANEL_PEOPLE_ENDPOINT
     event_map = {
+        'delete': '$delete',
         'set': '$set',
         'union': '$union',
         'add': '$add',
