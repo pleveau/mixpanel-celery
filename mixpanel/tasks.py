@@ -185,6 +185,7 @@ class PeopleTracker(EventTracker):
         'union': '$union',
         'add': '$add',
         'track_charge': '$append',
+        'unset': '$unset'
     }
 
     def run(
@@ -232,20 +233,36 @@ class PeopleTracker(EventTracker):
             time = properties.get('time', datetime.datetime.now().isoformat())
             transactions = dict(
                 (k, v) for (k, v) in properties.iteritems()
-                if not k in ('token', 'distinct_id', 'ip', 'amount', 'ignore_time')
+                if not k in ('token',
+                             'distinct_id',
+                             'ip',
+                             'amount',
+                             'ignore_time')
             )
 
             transactions['$time'] = time
             transactions['$amount'] = properties['amount']
             params[mp_key] = {'$transactions': transactions}
 
+        elif event == 'unset':
+            # special handling for unset, that takes json property list as
+            # input
+            params[mp_key] = properties.keys()
+
+
         else:
             # strip token and distinct_id out of the properties and use the
             # rest for passing with $set and $increment
+
             params[mp_key] = dict(
-                (k, v) for (k, v) in properties.iteritems()
-                if not k in ('token', 'distinct_id', 'ip', 'ignore_time')
-            )
+                            (k, v) for (k, v) in properties.iteritems()
+                            if not k in ('token',
+                                         'distinct_id',
+                                         'ip',
+                                         'ignore_time'))
+
+
+
 
         return self._encode_params(params, is_test)
 
