@@ -225,9 +225,6 @@ class PeopleTracker(EventTracker):
 
         if 'ip' in properties:
             params['$ip'] = properties['ip']
-        else:
-            # tells Mixpanel to ignore the ip if not provided in the properties
-            params['$ip'] = 0
 
         if 'ignore_time' in properties:
             params['$ignore_time'] = properties['ignore_time']
